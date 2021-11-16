@@ -1,7 +1,7 @@
 ---
 title: "In Class DT"
-author: "Brian Wright"
-date: "December 7, 2017"
+author: "Peter Shin"
+date: "Novemeber 16, 2021"
 output: html_document
 editor_options: 
   chunk_output_type: console
@@ -33,23 +33,37 @@ a clear report (knitted).
 
 
 ```{r}
-url <- "http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+# url <- "http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
 
-xx <- readr::read_csv(url)
+# xx <- readr::read_csv(url, col_names = FALSE)
+xx <- read.csv(url("http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"))
+View(xx)
 
+names <- c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country", "salary")
+
+names(xx) <- names
 View(xx)
 ```
 
-
- Footnotes: 
--	Some of the steps will not need to be repeated for the second model, 
-use your judgment
--	You can add or combine steps if needed
--	Also, remember to try several methods during evaluation and always be 
-mindful of how the model will be used in practice.
-- Make sure all your variables are the correct type (factor, character, etc.)
-
-
+Libraries
+```{r}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(data.table)
+library(caret)
+library(C50) #Need this to pass into caret 
+library(mlbench)
+library(mltools)
+# library(x11)
+```
 
 ```{r}
 #1 Load the data, check for missing data and ensure the labels are correct. 
@@ -58,6 +72,24 @@ mindful of how the model will be used in practice.
 ```{r}
 #2 Ensure all the variables are classified correctly including the target 
 # variable
+
+# str(xx)
+
+tofactor <- c('workclass' ,'education', 'marital-status', 'occupation', 'relationship', 'race', 'sex', 'native-country', 'salary')
+xx[,tofactor] <- lapply(xx[,tofactor] , factor)
+levels(xx$salary) <- c("leq50k", "g50k")
+xx$`hours-per-week-bin`<-ifelse(xx$`hours-per-week`>=40,"full-time","part-time")
+tofactor2 <- c('hours-per-week-bin')
+xx[,tofactor2] <- lapply(xx[,tofactor2] , factor)
+xx
+xx15 <- xx[15]
+xx15
+xx <- xx[c(2,4,6,7,8,9,10,16)]
+xx <- one_hot(as.data.table(xx),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE)
+# View(xx)
+xx <- cbind(xx,xx15)
+str(xx)
+# target is salary
 ```
 
 ```{r}
@@ -73,70 +105,292 @@ mindful of how the model will be used in practice.
 ```{r}
 #5 Determine the baserate or prevalence for the classifier, 
 # what does this number mean?  
+
+table(xx$salary)
+24720/(24720+7841)
+# 76% of people make less than $50,000 a year
 ```
 
 ```{r}
 #6 Split your data into test, validation and train. (70/15/15)
+
+part_index_1 <- caret::createDataPartition(xx$salary,
+                                           times=1,
+                                           p = 0.70,
+                                           groups=1,
+                                           list=FALSE)
+
+train <- xx[part_index_1, ]
+tune_and_test <- xx[-part_index_1, ]
+
+#The we need to use the function again to create the tuning set 
+
+tune_and_test_index <- createDataPartition(tune_and_test$salary,
+                                           p = .5,
+                                           list = FALSE,
+                                           times = 1)
+
+tune <- tune_and_test[tune_and_test_index, ]
+test <- tune_and_test[-tune_and_test_index, ]
+
+
+dim(train)
+dim(test)# these will be slightly off because the data set isn't perfectly even
+#buts its not a issue. 
+dim(tune)
+
 ```
 
-```{r}
+```{r, warning=FALSE}
 #7 Build your model using the training data and default settings in caret, 
 # double check to make sure you are using a cross-validation training approach
+
+features <- train[,c(-63)]#dropping 12 and 13. 12 essentially predicts 13 
+#perfectly and 13 is our target variable
+target <- train$salary
+
+str(features)
+str(target)
+
+#Cross validation process 
+
+fitControl <- trainControl(method = "repeatedcv",
+                          number = 10,
+                          repeats = 5, 
+                          returnResamp="all",
+                          classProbs = TRUE,
+                          allowParallel = TRUE) 
+
+# number - number of folds
+# repeats - number of times the CV is repeated, here it's 5 take the average of
+# those 5 repeats
+
+# Grid search options for each of the models available in CARET
+# http://topepo.github.io/caret/train-models-by-tag.html#tree-based-model
+
+grid <- expand.grid(.winnow = c(TRUE,FALSE), 
+                    .trials=c(1,5,10,15,20), 
+                    .model="tree")
+
+set.seed(345)
+xx_mdl <- train(x=features,
+                y=target,
+                method="C5.0",
+                tuneGrid=grid,
+                trControl=fitControl,
+                verbose=TRUE)
+
+# # View(xx_mdl) #provides us the hyper-parameters that were selected through the grid
+# search process. 
+
+# View(xx_mdl$pred)
+
+xyplot(xx_mdl,type = c("g", "p", "smooth"))
+
+varImp(xx_mdl)
 ```
 
 ```{r}
-#8 View the results, what is the most important variable for the tree? 
+#8 # View the results, what is the most important variable for the tree? 
+# The most important variables are relationship, marital status, and occupation
 ```
 
 ```{r}
 #9 Plot the output of the model to see the tree visually 
+tree_xx <- xx
+# View(tree_xx)
+# tree_xx$salary_binary <- ifelse(tree_xx$salary == 'leq50k', 0, 1) # 0 if leq 50k
+table(tree_xx$salary)
+str(tree_xx)
+# (x <- 1- sum(tree_xx$salary)/length(tree_xx$salary))
+
+tree_xx_long = tree_xx %>% gather(Var, #<- list of predictor variables
+                                Value,#<- the values of those predictor variables
+                                -salary)  #<- the column to gather the data by
+
+# View(tree_xx)
+# View(tree_xx_long)
+
+tree_xx_long_form = ddply(tree_xx_long, 
+                            .(Var, Value),#<- group by Var and Value, "." allows us to call the variables without quoting
+                            summarize,  
+                            prob_leq50 = mean(salary), #<- probability of making leq 50k
+                            prob_g50 = 1 - mean(salary)) #<- probability of making more than 50k
+# View(tree_xx_long_form)
+# Turn everything into factors to make algorithm work
+# tree_xx = lapply(tree_xx, function(x) as.factor(x))
+# tree_xx_1h <- one_hot(as.data.table(tree_xx),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
+# # View(tree_xx_1h)
+# tree_xx <- as_tibble(tree_xx)
+# # # View(tree_xx)
+# table(tree_xx$salary_binary)
+```
+
+```{r}
+# #Also want to add data labels to the target
+# tree_xx$salary_binary <- factor(tree_xx$salary_binary,labels = c("g50", "leq50"))
+# # View(tree_xx)
+#Build the model
+# Train the tree with the rpart() function.
+# We'll need to set the seed to make the results reproducible. 
+set.seed(345)
+tree_xx_tree_gini = rpart(salary~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = tree_xx,#<- data used
+                            control = rpart.control(cp=.001))
+# 
+# #Look at the results
+tree_xx_tree_gini
+# 
+# View(tree_xx_tree_gini$frame)
+rpart.plot(tree_xx_tree_gini, type =4, extra = 101)#package rpart.plot
+# View(tree_xx_tree_gini$cptable)
+
+plotcp(tree_xx_tree_gini)#Produces a "elbow chart" for various cp values
 ```
 
 ```{r}
 #10 Use the validation set and the predict function with your model to the
 # estimate the target variable.
+
+# Let's use the "predict" function to test our our model and then 
+# evaluate the accuracy of the results.
+tree_xx_fitted_model = predict(tree_xx_tree_gini, type= "class")
+
+# View(as.data.frame(tree_xx_fitted_model))
+
+#tree_xx_fitted_model <- as.numeric(tree_xx_fitted_model)
+# View(tree_xx_fitted_model)
+
+# Let's compare the results to the actual data.
+money_conf_matrix = table(tree_xx_fitted_model, tree_xx$salary)
+money_conf_matrix
+
+table(tree_xx_fitted_model)
+
 ```
 
 ```{r}
 #11 Compare the predicted values to those of the actual by generating a 
 # matrix ("by-hand").
+
+# tree_xx_fitted_model leq50k  g50k
+#               leq50k  22782  3658
+#               g50k     1938  4183
 ```
 
 ```{r}
 #12 Generate, "by-hand", the hit rate and detection rate and compare the 
 # detection rate to your original baseline rate. How did your model work?
+
+# model
+# leq50k   g50k 
+#  26440   6121
+# 
+# vs
+# 
+# actual
+# leq50k   g50k
+# 24720    7841
+
+# The model worked decently well. However as the model does classify a lot of people wrong if they make over 50k, it is not a good predictor for the salary variable.
 ```
 
 ```{r}
 #13 Use the the confusion matrix function to check a variety of metrics 
 # and comment on the metric that might be best for this type of analysis given your question.  
+
+confusionMatrix(as.factor(tree_xx_fitted_model), 
+                as.factor(tree_xx$salary), 
+                positive = "g50k", 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec")
+
+# The accuracy of this model according to the confusion matrix is .8281. However the prevalence is relatively low at .2408. 
 ```
 
 ```{r}
 #14 Generate a ROC and AUC output, interpret the results
+
+
+# The error rate is defined as a classification of "salary" when 
+# this is not the case, and vice versa. It's the sum of all the
+# values where a column contains the opposite value of the row.
+sum(money_conf_matrix[row(money_conf_matrix)!= col(money_conf_matrix)])
+# 5596
+
+
+# The error rate divides this figure by the total number of data points
+# for which the forecast is created.
+sum(money_conf_matrix)
+# 32561
+
+# Let's use these values in 1 calculation.
+money_error_rate = sum(money_conf_matrix[row(money_conf_matrix) != col(money_conf_matrix)])/ sum(money_conf_matrix)
+
+
+paste0("Hit Rate/True Error Rate:", money_error_rate * 100, "%")
+# "Hit Rate/True Error Rate:17.19%"
+
+
+#Detection Rate is the rate at which the algo detects the positive class in proportion to the entire classification A/(A+B+C+D) where A is poss poss
+
+money_conf_matrix
+
+money_conf_matrix[2,2]/sum(money_conf_matrix)# 12.85%, want this to be higher but only so high it can go, in a perfect model for this date it would be:
+
+
+money_roc <- roc(tree_xx$salary, as.numeric(tree_xx_fitted_model), plot = TRUE) #Building the evaluation ROC and AUV using the predicted and original target variables 
 ```
 
 ```{r}
 #15 Use the predict function to generate percentages, then select several 
 # different threshold levels using the confusion matrix function and 
 # interpret the results. What patterns did you notice, did the evaluation metrics change? 
+
+money_roc
+
+plot(money_roc)
+
+#We can adjust using a if else statement and the predicted prob
+
+tree_xx_fitted_prob = predict(tree_xx_tree_gini, type= "prob")
+# View(tree_xx_fitted_prob)
+
+#Let's 
+roc(tree_xx$salary, ifelse(tree_xx_fitted_prob[,'leq50k'] >= .75,0,1), plot=TRUE)
+
 ```
 
 ```{r}
 #16 Based on your understanding of the model and data adjust several of the hyper-parameters via the built in control function in caret or build and try new features, does the model quality improve? If so how and why, if not, why not?
+
+# The model quality improves when tree_xx_fitted_prob of leq50k is >= .75. That is the top probability that allows for the ROC to be as close to 1 as possible. 
 ```
 
 ```{r}
 #17 Once you are confident that your model is not improving, via changes 
 # implemented on the training set and evaluated on the the validation set (item 16), predict with the test set and report a final evaluation of the model. Discuss the output in comparison with the previous evaluations.  
+
+# The output of the prediction is that the test performance is acceptable. This means that the prediction based on the variables whether or not a person makes above or below $50k is acceptable. From the previous evaluation, it's shown that the prediction of the test is similar to the actual value that around 76% of people make <= 50k.
 ```
 
 ```{r}
 #18 Summarize what you learned along the way and make recommendations on how this could be used moving forward, being careful not to over promise. 
+
+# I learned the uses of the ROC. I also had to figure out how to create the tree using rpart. I realized that the factor categories had to be one hot encoded in order to perform the function.
+# 
+# In terms of learning about the data, I learned that the model created is an acceptable test to determine whether or not, based on the variables, a person makes more or less than 50k. Also, I learned that most realistic combinations of variable values will result in a person making less than 50k.
+# 
+# However, this is a model created based on previous data. This model must be updated as more data comes along to provide useful information about the data. I did not include numerical variables; if those variables can be factored using a higher powered machine, it is possible that the model can improve. When recording the most important variables, I could not include variables such as age and capital gain which heavily influence the results because of their types.
 ```
 
 ```{r}
 #19 What was the most interesting or hardest part of this process and what questions do you still have? 
+
+# The most interesting part of this was creating the binary tree. It was the hardest part because of the data cleaning that I did not recognize I had to do. However, once that was solved, I was happy to see a properly constructed decision tree. A question I have is how to incorporate numerical variables without having to categorize them into big chunks. I feel that if that can be done, the accuracy of the model will greatly increase.
 ```
 
 
